@@ -2,8 +2,11 @@ import { _electron as electron, expect, test } from "@playwright/test";
 
 test("launches the packaged UI with its private, upload-only workflow", async () => {
   const executablePath = process.env.PACKAGED_ELECTRON_PATH;
+  const linuxCiArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
   const electronApp = await electron.launch(
-    executablePath ? { executablePath } : { args: ["."] },
+    executablePath
+      ? { executablePath, args: linuxCiArgs }
+      : { args: [...linuxCiArgs, "."] },
   );
   const window = await electronApp.firstWindow();
 

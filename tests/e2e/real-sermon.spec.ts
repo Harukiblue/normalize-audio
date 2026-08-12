@@ -12,7 +12,11 @@ test("cleans a real full-length sermon through the packaged application", async 
   }
 
   const sourceBefore = await stat(sermonPath!);
-  const electronApp = await electron.launch({ executablePath: executablePath! });
+  const linuxCiArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
+  const electronApp = await electron.launch({
+    executablePath: executablePath!,
+    args: linuxCiArgs,
+  });
   const window = await electronApp.firstWindow();
 
   await electronApp.evaluate(async ({ dialog }, selectedPath) => {
