@@ -15,15 +15,19 @@ jobs:
           - os: windows-latest
             command: pnpm dist:win
             artifact: windows-x64
+            artifact_path: release/*-Windows-x64.exe
           - os: ubuntu-latest
             command: pnpm dist:linux
             artifact: linux-x64
-          - os: macos-13
-            command: pnpm build && electron-builder --mac dmg --x64
+            artifact_path: release/*-Linux-x86_64.AppImage
+          - os: macos-15-intel
+            command: pnpm dist:mac:x64
             artifact: macos-x64
-          - os: macos-14
-            command: pnpm build && electron-builder --mac dmg --arm64
+            artifact_path: release/*-macOS-x64.dmg
+          - os: macos-15
+            command: pnpm dist:mac:arm64
             artifact: macos-arm64
+            artifact_path: release/*-macOS-arm64.dmg
     runs-on: ${{ matrix.os }}
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -40,5 +44,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sermon-audio-cleaner-${{ matrix.artifact }}
-          path: release/*
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
