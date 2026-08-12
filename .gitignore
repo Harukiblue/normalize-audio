@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+release/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.partial.mp3
+validation/**/*.mp3
+.DS_Store
+Thumbs.db
