@@ -2,6 +2,55 @@
 
 Sermon Audio Cleaner is a private desktop application that turns a spoken-sermon recording into a cleaned, consistently leveled MP3. Processing is automatic after file selection and happens entirely on the local machine.
 
+## Download and install
+
+The ready-to-use desktop builds are available from GitHub Actions:
+
+1. Sign in to GitHub with an account that has access to this private repository.
+2. Open [Build desktop releases](https://github.com/Harukiblue/normalize-audio/actions/workflows/release.yml).
+3. Select the newest successful run (marked with a green check).
+4. Scroll to **Artifacts** and download the build for your computer:
+   - `sermon-audio-cleaner-windows-x64` — 64-bit Windows.
+   - `sermon-audio-cleaner-macos-arm64` — Apple Silicon Macs (M1, M2, M3, M4, or newer).
+   - `sermon-audio-cleaner-macos-x64` — Intel Macs.
+   - `sermon-audio-cleaner-linux-x64` — 64-bit Intel/AMD Linux.
+5. Extract the downloaded ZIP before following the platform instructions below.
+
+If you are unsure which Mac you have, open **Apple menu → About This Mac**. A value beginning with Apple M under **Chip** means Apple Silicon; a value under **Processor** that mentions Intel means Intel.
+
+### Windows
+
+1. Open the extracted `Sermon Audio Cleaner-...-Windows-x64.exe` installer.
+2. Follow the installer prompts and then launch **Sermon Audio Cleaner** from the Start menu.
+3. Because the installer is not code-signed, Windows may show a Microsoft Defender SmartScreen warning. Confirm that the publisher is listed as unknown, choose **More info**, and then choose **Run anyway** only if you downloaded the file from this repository.
+
+### macOS
+
+1. Open the extracted `Sermon Audio Cleaner-...-macOS-....dmg` file.
+2. Drag **Sermon Audio Cleaner** into the **Applications** folder, then eject the disk image.
+3. Open the app from **Applications**. Because the app is not signed or notarized, macOS may block the first launch. In **System Settings → Privacy & Security**, find the message about Sermon Audio Cleaner, choose **Open Anyway**, then confirm **Open**. Only bypass this warning when the DMG came from this repository.
+
+### Linux
+
+The Linux build is an AppImage and does not require installation. Extract the ZIP, open a terminal in that folder, and run:
+
+```sh
+chmod +x "Sermon Audio Cleaner-"*.AppImage
+./"Sermon Audio Cleaner-"*.AppImage
+```
+
+You can move the AppImage to a permanent folder before running it. If your distribution reports a FUSE-related error, use the AppImage's portable fallback:
+
+```sh
+./"Sermon Audio Cleaner-"*.AppImage --appimage-extract-and-run
+```
+
+### Clean a sermon
+
+1. Choose **Choose recording** (or drop an audio file onto the window).
+2. Wait while cleanup and loudness normalization run automatically.
+3. When processing finishes, use **Show in folder** to find the new `-cleaned.mp3` file beside the original recording. The original file is never modified.
+
 ## What it does
 
 - Accepts MP3, WAV, M4A/AAC, FLAC, OGG/Opus, and WebM audio up to 90 minutes.
