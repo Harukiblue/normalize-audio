@@ -18,6 +18,8 @@ export type ProcessingErrorCode =
   | "INSUFFICIENT_DISK"
   | "WRITE_FAILED"
   | "PROCESSOR_MISSING"
+  | "PREVIEW_FAILED"
+  | "INVALID_TARGET"
   | "PROCESSING_FAILED"
   | "CANCELLED";
 
@@ -32,6 +34,15 @@ export interface AudioFileInfo extends AudioSelection {
   codec: string;
   sampleRate: number | null;
   channels: number | null;
+}
+
+export interface AudioPreview {
+  previewId: string;
+  file: AudioFileInfo;
+  audioUrl: string;
+  sampleStartSeconds: number;
+  sampleDurationSeconds: number;
+  referenceLufs: number;
 }
 
 export interface JobStart {
@@ -57,6 +68,7 @@ export interface ProcessingResult {
   audioUrl: string;
   durationSeconds: number;
   sizeBytes: number;
+  targetLufs: number;
 }
 
 interface ProcessingFailureBase {
@@ -73,7 +85,9 @@ export type JobEvent = ProcessingProgress | ProcessingResult | ProcessingFailure
 export interface SermonCleanerApi {
   selectAudio: () => Promise<AudioSelection | null>;
   registerDroppedFile: (file: File) => Promise<AudioSelection>;
-  startProcessing: (sourcePath: string) => Promise<JobStart>;
+  preparePreview: (sourcePath: string) => Promise<AudioPreview>;
+  discardPreview: (previewId: string) => Promise<void>;
+  startProcessing: (previewId: string, targetLufs: number) => Promise<JobStart>;
   cancelProcessing: (jobId: string) => Promise<void>;
   openOutput: (jobId: string) => Promise<void>;
   revealOutput: (jobId: string) => Promise<void>;

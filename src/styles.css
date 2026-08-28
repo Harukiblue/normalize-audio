@@ -29,9 +29,9 @@ body {
     var(--cream);
 }
 
-button, audio { font: inherit; }
+button, audio, input { font: inherit; }
 button { cursor: pointer; }
-button:focus-visible, a:focus-visible, audio:focus-visible {
+button:focus-visible, a:focus-visible, audio:focus-visible, input:focus-visible {
   outline: 3px solid rgba(197, 138, 58, 0.55);
   outline-offset: 3px;
 }
@@ -139,7 +139,7 @@ button:focus-visible, a:focus-visible, audio:focus-visible {
   margin: 0 auto;
 }
 
-.drop-card, .process-card, .result-card, .error-card {
+.drop-card, .preview-loading-card, .preview-card, .process-card, .result-card, .error-card {
   min-height: 356px;
   background: rgba(255, 253, 248, 0.92);
   border: 1px solid rgba(28, 41, 37, 0.12);
@@ -176,7 +176,7 @@ button:focus-visible, a:focus-visible, audio:focus-visible {
 
 .drop-icon svg { width: 32px; height: 32px; }
 
-.drop-card h2, .process-card h2, .result-card h2, .error-card h2 {
+.drop-card h2, .preview-loading-card h2, .preview-card h2, .process-card h2, .result-card h2, .error-card h2 {
   margin: 18px 0 7px;
   color: var(--ink);
   font-family: Georgia, "Times New Roman", serif;
@@ -233,6 +233,61 @@ button:focus-visible, a:focus-visible, audio:focus-visible {
   color: #8a8f89;
   font-size: 0.74rem;
 }
+
+.preview-loading-card, .preview-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 38px 48px;
+  text-align: center;
+}
+
+.preview-spinner {
+  width: 54px;
+  height: 54px;
+  margin-bottom: 20px;
+  border: 5px solid #e2ded3;
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: preview-spin 900ms linear infinite;
+}
+
+@keyframes preview-spin { to { transform: rotate(360deg); } }
+
+.preview-loading-card .status-label, .preview-card .status-label { margin-bottom: 2px; }
+.preview-loading-card h2, .preview-card h2 {
+  max-width: 640px;
+  margin: 5px 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-loading-card > p:last-child, .preview-note {
+  max-width: 590px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+.preview-card audio { width: min(520px, 100%); height: 42px; margin: 20px 0 19px; }
+
+.volume-control { width: min(560px, 100%); }
+.volume-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; }
+.volume-heading label { color: var(--ink); font-size: 0.86rem; font-weight: 760; }
+.volume-heading output { color: var(--forest); font-size: 0.83rem; font-weight: 760; }
+.volume-control input[type="range"] {
+  width: 100%;
+  margin: 12px 0 5px;
+  accent-color: var(--forest);
+  cursor: pointer;
+}
+.volume-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.7rem; line-height: 1.2; }
+.volume-scale span:nth-child(2) { text-align: center; }
+.volume-scale span:last-child { text-align: right; }
+.volume-scale small { color: #969a95; font-size: 0.63rem; }
+.speaker-note { margin: 14px 0 17px; color: #858b85; font-size: 0.71rem; }
+.preview-actions { display: flex; justify-content: center; gap: 10px; }
 
 .process-card {
   display: grid;
@@ -318,6 +373,7 @@ button:focus-visible, a:focus-visible, audio:focus-visible {
 .result-card .status-label, .error-card .status-label { margin-bottom: 3px; }
 .result-card h2, .error-card h2 { margin: 4px 0 6px; font-size: 2rem; }
 .result-name { margin: 0 0 17px; color: var(--muted); font-size: 0.86rem; }
+.result-target { margin: -10px 0 15px; color: var(--forest); font-size: 0.76rem; font-weight: 720; }
 .result-card audio { width: min(490px, 100%); height: 42px; margin-bottom: 13px; }
 .saved-path { max-width: 600px; margin: 0 0 20px; color: #838983; font-size: 0.74rem; }
 .saved-path span { word-break: break-all; }
@@ -362,9 +418,11 @@ footer {
   .progress-ring::before { width: 120px; height: 120px; }
   .file-meta { justify-content: center; }
   .trust-row { grid-template-columns: 1fr; }
-  .result-card, .error-card { padding: 34px 25px; }
+  .preview-loading-card, .preview-card, .result-card, .error-card { padding: 34px 25px; }
+  .preview-actions { width: 100%; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+  .preview-spinner { animation: none; }
 }

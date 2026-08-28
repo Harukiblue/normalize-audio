@@ -18,6 +18,8 @@ import { AudioProcessor, ProcessingError } from "./processor";
 const IPC = {
   select: "audio:select",
   registerDrop: "audio:register-drop",
+  preview: "audio:preview",
+  discardPreview: "audio:discard-preview",
   start: "audio:start",
   cancel: "audio:cancel",
   open: "audio:open",
@@ -112,14 +114,18 @@ function configureNetworkBoundary(): void {
 function configureProtocol(): void {
   protocol.handle("sermon-audio", async (request) => {
     const url = new URL(request.url);
-    if (url.hostname !== "result" || !processor) {
+    if (!processor) {
       return new Response("Not found", { status: 404 });
     }
-    const jobId = decodeURIComponent(url.pathname.replace(/^\//, ""));
-    const result = processor.resultFor(jobId);
-    if (!result) return new Response("Not found", { status: 404 });
+    const id = decodeURIComponent(url.pathname.replace(/^\//, ""));
+    const audioPath = url.hostname === "result"
+      ? processor.resultFor(id)?.outputPath
+      : url.hostname === "preview"
+        ? processor.previewPathFor(id)
+        : null;
+    if (!audioPath) return new Response("Not found", { status: 404 });
 
-    return net.fetch(pathToFileURL(result.outputPath).toString(), {
+    return net.fetch(pathToFileURL(audioPath).toString(), {
       headers: request.headers,
     });
   });
@@ -153,11 +159,22 @@ function configureIpc(): void {
     return selection;
   });
 
-  ipcMain.handle(IPC.start, (_event, sourcePath: unknown) => {
+  ipcMain.handle(IPC.preview, async (_event, sourcePath: unknown) => {
     if (!processor || typeof sourcePath !== "string" || !approvedSources.has(sourcePath)) {
       throw new ProcessingError("FILE_NOT_FOUND", "Select or drop the recording again.");
     }
-    return processor.start(sourcePath);
+    return processor.preparePreview(sourcePath);
+  });
+
+  ipcMain.handle(IPC.discardPreview, async (_event, previewId: unknown) => {
+    if (processor && typeof previewId === "string") await processor.discardPreview(previewId);
+  });
+
+  ipcMain.handle(IPC.start, (_event, previewId: unknown, targetLufs: unknown) => {
+    if (!processor || typeof previewId !== "string") {
+      throw new ProcessingError("PREVIEW_FAILED", "Prepare the volume preview again.");
+    }
+    return processor.start(previewId, targetLufs as number);
   });
 
   ipcMain.handle(IPC.cancel, async (_event, jobId: unknown) => {
@@ -184,6 +201,7 @@ app.whenReady().then(() => {
     ffmpegPath: unpackedBinary(ffmpegStatic),
     ffprobePath: unpackedBinary(ffprobeStatic),
     downloadsDirectory: app.getPath("downloads"),
+    previewDirectory: path.join(app.getPath("temp"), "sermon-audio-cleaner-previews"),
     emit: broadcast,
   });
   configureNetworkBoundary();

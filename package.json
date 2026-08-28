@@ -1,6 +1,6 @@
 {
   "name": "sermon-audio-cleaner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A private, automatic sermon audio cleaner powered by deterministic FFmpeg filters.",
   "license": "GPL-3.0-or-later",
   "author": "Sermon Audio Cleaner contributors",

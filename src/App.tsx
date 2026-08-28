@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  AudioPreview,
   AudioSelection,
   JobEvent,
   ProcessingFailure,
   ProcessingProgress,
   ProcessingResult,
 } from "./types";
+import { LOUDNESS_TARGET, previewPlaybackGain } from "./loudness";
 
-type Screen = "idle" | "working" | "done" | "error";
+type Screen = "idle" | "previewing" | "adjusting" | "working" | "done" | "error";
 
 function formatDuration(totalSeconds: number): string {
   const safe = Math.max(0, Math.round(totalSeconds));
@@ -58,12 +60,15 @@ function CheckIcon() {
 export default function App() {
   const [screen, setScreen] = useState<Screen>("idle");
   const [selection, setSelection] = useState<AudioSelection | null>(null);
+  const [preview, setPreview] = useState<AudioPreview | null>(null);
+  const [targetLufs, setTargetLufs] = useState<number>(LOUDNESS_TARGET.defaultIntegrated);
   const [progress, setProgress] = useState<ProcessingProgress | null>(null);
   const [result, setResult] = useState<ProcessingResult | null>(null);
   const [failure, setFailure] = useState<ProcessingFailure | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const currentJobId = useRef<string | null>(null);
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     return window.sermonCleaner.onJobEvent((event: JobEvent) => {
@@ -87,15 +92,43 @@ export default function App() {
     });
   }, []);
 
-  const begin = useCallback(async (audio: AudioSelection) => {
+  useEffect(() => {
+    if (previewAudio.current) previewAudio.current.volume = previewPlaybackGain(targetLufs);
+  }, [preview, targetLufs]);
+
+  const prepare = useCallback(async (audio: AudioSelection) => {
     setSelection(audio);
+    setPreview(null);
+    setTargetLufs(LOUDNESS_TARGET.defaultIntegrated);
+    setFailure(null);
+    setResult(null);
+    setProgress(null);
+    setScreen("previewing");
+    try {
+      const prepared = await window.sermonCleaner.preparePreview(audio.sourcePath);
+      setPreview(prepared);
+      setScreen("adjusting");
+    } catch (error) {
+      setFailure({
+        jobId: "preview",
+        state: "failed",
+        code: "PROCESSING_FAILED",
+        message: errorMessage(error),
+      });
+      setScreen("error");
+    }
+  }, []);
+
+  const begin = useCallback(async () => {
+    if (!preview) return;
     setFailure(null);
     setResult(null);
     setProgress(null);
     setScreen("working");
     try {
-      const start = await window.sermonCleaner.startProcessing(audio.sourcePath);
+      const start = await window.sermonCleaner.startProcessing(preview.previewId, targetLufs);
       currentJobId.current = start.jobId;
+      setPreview(null);
     } catch (error) {
       setFailure({
         jobId: "not-started",
@@ -105,13 +138,13 @@ export default function App() {
       });
       setScreen("error");
     }
-  }, []);
+  }, [preview, targetLufs]);
 
   const chooseFile = useCallback(async () => {
     if (screen === "working") return;
     try {
       const audio = await window.sermonCleaner.selectAudio();
-      if (audio) await begin(audio);
+      if (audio) await prepare(audio);
     } catch (error) {
       setFailure({
         jobId: "selection",
@@ -121,7 +154,7 @@ export default function App() {
       });
       setScreen("error");
     }
-  }, [begin, screen]);
+  }, [prepare, screen]);
 
   const handleDrop = useCallback(
     async (event: React.DragEvent) => {
@@ -132,7 +165,7 @@ export default function App() {
       if (!file) return;
       try {
         const audio = await window.sermonCleaner.registerDroppedFile(file);
-        await begin(audio);
+        await prepare(audio);
       } catch (error) {
         setFailure({
           jobId: "drop",
@@ -143,7 +176,7 @@ export default function App() {
         setScreen("error");
       }
     },
-    [begin, screen],
+    [prepare, screen],
   );
 
   const cancel = useCallback(async () => {
@@ -153,14 +186,17 @@ export default function App() {
   }, [isCancelling]);
 
   const reset = useCallback(() => {
+    if (preview) void window.sermonCleaner.discardPreview(preview.previewId);
     currentJobId.current = null;
     setScreen("idle");
     setSelection(null);
+    setPreview(null);
+    setTargetLufs(LOUDNESS_TARGET.defaultIntegrated);
     setProgress(null);
     setResult(null);
     setFailure(null);
     setIsCancelling(false);
-  }, []);
+  }, [preview]);
 
   const percent = progress?.percent ?? (screen === "working" ? 0 : 100);
 
@@ -182,7 +218,7 @@ export default function App() {
         <h1>Make every word<br />easier to hear.</h1>
         <p className="lede">
           Drop in a sermon recording. We’ll reduce steady background noise,
-          balance the volume, and save a polished MP3 automatically.
+          let you preview the output volume, and save a polished MP3.
         </p>
       </section>
 
@@ -209,7 +245,68 @@ export default function App() {
             <button className="primary-button" type="button" onClick={chooseFile}>
               Choose recording
             </button>
-            <p className="automatic-note">Processing starts automatically</p>
+            <p className="automatic-note">We’ll prepare a private 3-second volume preview</p>
+          </div>
+        )}
+
+        {screen === "previewing" && selection && (
+          <div className="preview-loading-card">
+            <div className="preview-spinner" aria-hidden="true" />
+            <p className="status-label">Preparing volume preview</p>
+            <h2 title={selection.name}>{selection.name}</h2>
+            <p>Finding clear speech near the middle and applying the cleanup preset…</p>
+          </div>
+        )}
+
+        {screen === "adjusting" && preview && (
+          <div className="preview-card">
+            <p className="status-label">Preview output volume</p>
+            <h2 title={preview.file.name}>{preview.file.name}</h2>
+            <p className="preview-note">
+              This cleaned {formatDuration(preview.sampleDurationSeconds)} sample starts at {formatDuration(preview.sampleStartSeconds)}.
+              Press play, then move the slider while listening.
+            </p>
+            <audio
+              ref={previewAudio}
+              controls
+              preload="auto"
+              src={preview.audioUrl}
+              onLoadedMetadata={() => {
+                if (previewAudio.current) previewAudio.current.volume = previewPlaybackGain(targetLufs);
+              }}
+            >
+              Your browser cannot play this audio preview.
+            </audio>
+            <div className="volume-control">
+              <div className="volume-heading">
+                <label htmlFor="target-loudness">Output volume</label>
+                <output htmlFor="target-loudness">
+                  {targetLufs === LOUDNESS_TARGET.defaultIntegrated
+                    ? `Default (${targetLufs} LUFS)`
+                    : `${targetLufs < LOUDNESS_TARGET.defaultIntegrated ? "Quieter" : "Louder"} (${targetLufs} LUFS)`}
+                </output>
+              </div>
+              <input
+                id="target-loudness"
+                type="range"
+                min={LOUDNESS_TARGET.minimum}
+                max={LOUDNESS_TARGET.maximum}
+                step={1}
+                value={targetLufs}
+                aria-valuetext={`${targetLufs} LUFS${targetLufs === LOUDNESS_TARGET.defaultIntegrated ? ", default" : ""}`}
+                onChange={(event) => setTargetLufs(Number(event.target.value))}
+              />
+              <div className="volume-scale" aria-hidden="true">
+                <span>Quiet<br /><small>{LOUDNESS_TARGET.minimum} LUFS</small></span>
+                <span>Default<br /><small>{LOUDNESS_TARGET.defaultIntegrated} LUFS</small></span>
+                <span>Louder<br /><small>{LOUDNESS_TARGET.maximum} LUFS</small></span>
+              </div>
+            </div>
+            <p className="speaker-note">Your computer’s speaker volume also affects what you hear.</p>
+            <div className="preview-actions">
+              <button className="primary-button" type="button" onClick={begin}>Clean full recording</button>
+              <button className="secondary-button" type="button" onClick={reset}>Choose another recording</button>
+            </div>
           </div>
         )}
 
@@ -256,6 +353,7 @@ export default function App() {
             <p className="status-label">Cleaning complete</p>
             <h2>Your sermon is ready.</h2>
             <p className="result-name">{result.outputName}</p>
+            <p className="result-target">Normalized to {result.targetLufs} LUFS</p>
             <audio controls preload="metadata" src={result.audioUrl}>
               Your browser cannot play this audio preview.
             </audio>
@@ -288,7 +386,7 @@ export default function App() {
       <section className="trust-row" aria-label="How processing works">
         <div><strong>No uploads</strong><span>Your audio never leaves this device.</span></div>
         <div><strong>No AI</strong><span>Deterministic audio filters only.</span></div>
-        <div><strong>No settings</strong><span>One balanced preset for spoken sermons.</span></div>
+        <div><strong>Preview &amp; adjust</strong><span>Hear the target volume before cleaning.</span></div>
       </section>
 
       <footer>

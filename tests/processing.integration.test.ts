@@ -11,11 +11,13 @@ import {
   exportArguments,
   parseLoudnormStats,
 } from "../electron/audio-utils";
+import { AudioProcessor } from "../electron/processor";
 
 const run = promisify(execFile);
 let directory: string;
 let sourcePath: string;
-let outputPath: string;
+const outputPaths = new Map<number, string>();
+let previewSourcePath: string;
 
 async function ffmpeg(args: string[]) {
   if (!ffmpegPath) throw new Error("ffmpeg-static did not provide a binary.");
@@ -30,7 +32,6 @@ async function ffprobe(args: string[]) {
 beforeAll(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "sermon-cleaner-integration-"));
   sourcePath = path.join(directory, "Uneven noisy sermon.wav");
-  outputPath = path.join(directory, "Uneven noisy sermon-cleaned.partial.mp3");
 
   await ffmpeg([
     "-hide_banner",
@@ -50,11 +51,30 @@ beforeAll(async () => {
     sourcePath,
   ]);
 
-  const analysis = await ffmpeg(
-    analysisArguments(sourcePath, process.platform === "win32" ? "NUL" : "/dev/null"),
-  );
-  const measurements = parseLoudnormStats(analysis.stderr);
-  await ffmpeg(exportArguments(sourcePath, outputPath, measurements));
+  for (const target of [-24, -16, -14]) {
+    const outputPath = path.join(directory, `Uneven noisy sermon-${Math.abs(target)}.mp3`);
+    const analysis = await ffmpeg(
+      analysisArguments(sourcePath, process.platform === "win32" ? "NUL" : "/dev/null", target),
+    );
+    const measurements = parseLoudnormStats(analysis.stderr);
+    await ffmpeg(exportArguments(sourcePath, outputPath, measurements, target));
+    outputPaths.set(target, outputPath);
+  }
+
+  previewSourcePath = path.join(directory, "Midpoint pause.wav");
+  await ffmpeg([
+    "-hide_banner",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=240:duration=70:sample_rate=48000",
+    "-af",
+    "volume='if(between(t,33.5,36.5),0,0.25)':eval=frame",
+    "-c:a",
+    "pcm_s16le",
+    previewSourcePath,
+  ]);
 }, 45_000);
 
 afterAll(async () => {
@@ -79,7 +99,7 @@ describe("real FFmpeg cleanup pipeline", () => {
       "-show_format",
       "-of",
       "json",
-      outputPath,
+      outputPaths.get(-16)!,
     ]);
     const probe = JSON.parse(stdout) as {
       streams: Array<{ codec_name: string; sample_rate: string; channels: number }>;
@@ -91,20 +111,65 @@ describe("real FFmpeg cleanup pipeline", () => {
     expect(Math.abs(Number(probe.format.duration) - 8)).toBeLessThan(0.15);
   });
 
-  it("lands within the spoken-audio loudness and true-peak targets", async () => {
+  it("lands within each selectable loudness target and the peak ceiling", async () => {
+    for (const target of [-24, -16, -14]) {
+      const measured = await ffmpeg([
+        "-hide_banner",
+        "-i",
+        outputPaths.get(target)!,
+        "-af",
+        `loudnorm=I=${target}:LRA=7:TP=-1.5:print_format=json`,
+        "-f",
+        "null",
+        process.platform === "win32" ? "NUL" : "/dev/null",
+      ]);
+      const stats = parseLoudnormStats(measured.stderr);
+      expect(stats.inputI).toBeGreaterThanOrEqual(target - 1);
+      expect(stats.inputI).toBeLessThanOrEqual(target + 1);
+      expect(stats.inputTp).toBeLessThanOrEqual(-1);
+    }
+  });
+
+  it("creates a three-second cleaned preview away from midpoint silence and removes it", async () => {
+    if (!ffmpegPath || !ffprobePath) throw new Error("Bundled processors are unavailable.");
+    const processor = new AudioProcessor({
+      ffmpegPath,
+      ffprobePath,
+      downloadsDirectory: directory,
+      previewDirectory: path.join(directory, "previews"),
+      emit: () => undefined,
+    });
+    const preview = await processor.preparePreview(previewSourcePath);
+    expect(preview.sampleDurationSeconds).toBe(3);
+    expect(
+      preview.sampleStartSeconds + preview.sampleDurationSeconds <= 33.5 ||
+      preview.sampleStartSeconds >= 36.5,
+    ).toBe(true);
+    const previewPath = processor.previewPathFor(preview.previewId);
+    expect(previewPath).toBeTruthy();
+    const probe = await ffprobe([
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "json",
+      previewPath!,
+    ]);
+    expect(Number((JSON.parse(probe.stdout) as { format: { duration: string } }).format.duration)).toBeCloseTo(3, 1);
     const measured = await ffmpeg([
       "-hide_banner",
       "-i",
-      outputPath,
+      previewPath!,
       "-af",
-      "loudnorm=I=-16:LRA=7:TP=-1.5:print_format=json",
+      "loudnorm=I=-14:LRA=7:TP=-1.5:print_format=json",
       "-f",
       "null",
       process.platform === "win32" ? "NUL" : "/dev/null",
     ]);
-    const stats = parseLoudnormStats(measured.stderr);
-    expect(stats.inputI).toBeGreaterThanOrEqual(-17);
-    expect(stats.inputI).toBeLessThanOrEqual(-15);
-    expect(stats.inputTp).toBeLessThanOrEqual(-1);
+    expect(parseLoudnormStats(measured.stderr).inputI).toBeGreaterThanOrEqual(-15);
+    expect(() => processor.start(preview.previewId, -13)).toThrow(/between -24 and -14/i);
+    await processor.discardPreview(preview.previewId);
+    expect(processor.previewPathFor(preview.previewId)).toBeNull();
   });
 });

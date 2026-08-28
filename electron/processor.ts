@@ -12,6 +12,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   AudioFileInfo,
+  AudioPreview,
   AudioSelection,
   JobEvent,
   JobStart,
@@ -21,13 +22,20 @@ import type {
 import { MAX_DURATION_SECONDS } from "../src/types";
 import {
   analysisArguments,
+  choosePreviewStart,
   exportArguments,
   findAvailableOutputPath,
   isSupportedAudioPath,
+  isValidLoudnessTarget,
+  LOUDNESS_TARGET,
   parseLoudnormStats,
+  parseSilenceIntervals,
   parseProgressSeconds,
   pathStats,
   progressPercent,
+  PREVIEW_DURATION_SECONDS,
+  PREVIEW_SEARCH_RADIUS_SECONDS,
+  silenceScanArguments,
 } from "./audio-utils";
 
 interface ProbeStream {
@@ -53,6 +61,14 @@ interface JobRecord {
   child: ChildProcess | null;
   partialPath: string | null;
   result: ProcessingResult | null;
+  targetLufs: number;
+}
+
+interface PreviewRecord {
+  id: string;
+  sourcePath: string;
+  outputPath: string;
+  preview: AudioPreview;
 }
 
 interface RunResult {
@@ -64,6 +80,7 @@ interface ProcessorOptions {
   ffmpegPath: string;
   ffprobePath: string;
   downloadsDirectory: string;
+  previewDirectory: string;
   emit: (event: JobEvent) => void;
 }
 
@@ -79,7 +96,9 @@ export class ProcessingError extends Error {
 
 export class AudioProcessor {
   private readonly jobs = new Map<string, JobRecord>();
+  private readonly previews = new Map<string, PreviewRecord>();
   private activeJobId: string | null = null;
+  private previewTask: JobRecord | null = null;
 
   constructor(private readonly options: ProcessorOptions) {}
 
@@ -103,23 +122,151 @@ export class AudioProcessor {
     };
   }
 
-  start(sourcePath: string): JobStart {
-    if (this.activeJobId) {
-      throw new ProcessingError("BUSY", "Finish or cancel the current sermon first.");
+  async preparePreview(sourcePath: string): Promise<AudioPreview> {
+    if (this.activeJobId || this.previewTask) {
+      throw new ProcessingError("BUSY", "Finish the current audio task first.");
     }
 
-    const id = randomUUID();
-    const job: JobRecord = {
-      id,
+    await this.discardAllPreviews();
+    const previewId = randomUUID();
+    const task: JobRecord = {
+      id: previewId,
       sourcePath,
       startedAt: Date.now(),
       cancelRequested: false,
       child: null,
       partialPath: null,
       result: null,
+      targetLufs: LOUDNESS_TARGET.maximum,
+    };
+    this.previewTask = task;
+
+    try {
+      const selection = await this.selectionFor(sourcePath);
+      const file = await this.probeInput(task, selection);
+      const sampleDurationSeconds = Math.min(PREVIEW_DURATION_SECONDS, file.durationSeconds);
+      const midpoint = file.durationSeconds / 2;
+      const scanStartSeconds = Math.max(0, midpoint - PREVIEW_SEARCH_RADIUS_SECONDS);
+      const scanEndSeconds = Math.min(file.durationSeconds, midpoint + PREVIEW_SEARCH_RADIUS_SECONDS);
+      const scanDurationSeconds = Math.max(sampleDurationSeconds, scanEndSeconds - scanStartSeconds);
+      let silenceIntervals: ReturnType<typeof parseSilenceIntervals> = [];
+      try {
+        const scan = await this.run(
+          task,
+          this.options.ffmpegPath,
+          silenceScanArguments(
+            sourcePath,
+            scanStartSeconds,
+            scanDurationSeconds,
+            process.platform === "win32" ? "NUL" : "/dev/null",
+          ),
+        );
+        silenceIntervals = parseSilenceIntervals(scan.stderr, scanDurationSeconds);
+      } catch (error) {
+        if (task.cancelRequested) throw error;
+        silenceIntervals = [];
+      }
+
+      const sampleStartSeconds = choosePreviewStart(
+        file.durationSeconds,
+        scanStartSeconds,
+        scanDurationSeconds,
+        silenceIntervals,
+      );
+      const segment = { startSeconds: sampleStartSeconds, durationSeconds: sampleDurationSeconds };
+      await mkdir(this.options.previewDirectory, { recursive: true });
+      const partialPath = path.join(this.options.previewDirectory, `.${previewId}.partial.mp3`);
+      const outputPath = path.join(this.options.previewDirectory, `${previewId}.mp3`);
+      task.partialPath = partialPath;
+
+      const analysis = await this.run(
+        task,
+        this.options.ffmpegPath,
+        analysisArguments(
+          sourcePath,
+          process.platform === "win32" ? "NUL" : "/dev/null",
+          LOUDNESS_TARGET.maximum,
+          segment,
+        ),
+      );
+      const measurements = parseLoudnormStats(analysis.stderr);
+      await this.run(
+        task,
+        this.options.ffmpegPath,
+        exportArguments(
+          sourcePath,
+          partialPath,
+          measurements,
+          LOUDNESS_TARGET.maximum,
+          segment,
+        ),
+      );
+      await rename(partialPath, outputPath);
+      task.partialPath = null;
+
+      const preview: AudioPreview = {
+        previewId,
+        file,
+        audioUrl: `sermon-audio://preview/${previewId}`,
+        sampleStartSeconds,
+        sampleDurationSeconds,
+        referenceLufs: LOUDNESS_TARGET.maximum,
+      };
+      this.previews.set(previewId, { id: previewId, sourcePath, outputPath, preview });
+      return preview;
+    } catch (error) {
+      await this.removePartial(task);
+      if (error instanceof ProcessingError) throw error;
+      throw new ProcessingError(
+        "PREVIEW_FAILED",
+        "A clear preview could not be created from this recording. The original file is safe.",
+      );
+    } finally {
+      task.child = null;
+      if (this.previewTask === task) this.previewTask = null;
+    }
+  }
+
+  previewPathFor(previewId: string): string | null {
+    return this.previews.get(previewId)?.outputPath ?? null;
+  }
+
+  async discardPreview(previewId: string): Promise<void> {
+    const record = this.previews.get(previewId);
+    if (!record) return;
+    this.previews.delete(previewId);
+    await rm(record.outputPath, { force: true }).catch(() => undefined);
+  }
+
+  start(previewId: string, targetLufs: number): JobStart {
+    if (this.activeJobId) {
+      throw new ProcessingError("BUSY", "Finish or cancel the current sermon first.");
+    }
+    if (!isValidLoudnessTarget(targetLufs)) {
+      throw new ProcessingError(
+        "INVALID_TARGET",
+        `Choose an output volume between ${LOUDNESS_TARGET.minimum} and ${LOUDNESS_TARGET.maximum} LUFS.`,
+      );
+    }
+    const preview = this.previews.get(previewId);
+    if (!preview) {
+      throw new ProcessingError("PREVIEW_FAILED", "Prepare the volume preview again.");
+    }
+
+    const id = randomUUID();
+    const job: JobRecord = {
+      id,
+      sourcePath: preview.sourcePath,
+      startedAt: Date.now(),
+      cancelRequested: false,
+      child: null,
+      partialPath: null,
+      result: null,
+      targetLufs,
     };
     this.jobs.set(id, job);
     this.activeJobId = id;
+    void this.discardPreview(previewId);
     void this.process(job);
     return { jobId: id };
   }
@@ -136,6 +283,12 @@ export class AudioProcessor {
   }
 
   async dispose(): Promise<void> {
+    if (this.previewTask) {
+      this.previewTask.cancelRequested = true;
+      this.previewTask.child?.kill("SIGTERM");
+      await this.removePartial(this.previewTask);
+    }
+    await this.discardAllPreviews();
     const active = this.activeJobId ? this.jobs.get(this.activeJobId) : null;
     if (!active) return;
     active.cancelRequested = true;
@@ -170,7 +323,11 @@ export class AudioProcessor {
       const analysis = await this.run(
         job,
         this.options.ffmpegPath,
-        analysisArguments(job.sourcePath, process.platform === "win32" ? "NUL" : "/dev/null"),
+        analysisArguments(
+          job.sourcePath,
+          process.platform === "win32" ? "NUL" : "/dev/null",
+          job.targetLufs,
+        ),
         (line) => {
           const seconds = parseProgressSeconds(line);
           if (seconds === null) return;
@@ -200,7 +357,7 @@ export class AudioProcessor {
       await this.run(
         job,
         this.options.ffmpegPath,
-        exportArguments(job.sourcePath, job.partialPath, measurements),
+        exportArguments(job.sourcePath, job.partialPath, measurements, job.targetLufs),
         (line) => {
           const seconds = parseProgressSeconds(line);
           if (seconds === null) return;
@@ -250,6 +407,7 @@ export class AudioProcessor {
         audioUrl: `sermon-audio://result/${job.id}`,
         durationSeconds: file.durationSeconds,
         sizeBytes: output.size,
+        targetLufs: job.targetLufs,
       };
       this.options.emit(job.result);
     } catch (error) {
@@ -484,6 +642,12 @@ export class AudioProcessor {
     if (!job.partialPath) return;
     await rm(job.partialPath, { force: true }).catch(() => undefined);
     job.partialPath = null;
+  }
+
+  private async discardAllPreviews(): Promise<void> {
+    const records = [...this.previews.values()];
+    this.previews.clear();
+    await Promise.all(records.map((record) => rm(record.outputPath, { force: true }).catch(() => undefined)));
   }
 
   private toFailure(

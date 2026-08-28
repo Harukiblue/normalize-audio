@@ -1,6 +1,6 @@
 # Sermon Audio Cleaner
 
-Sermon Audio Cleaner is a private desktop application that turns a spoken-sermon recording into a cleaned, consistently leveled MP3. Processing is automatic after file selection and happens entirely on the local machine.
+Sermon Audio Cleaner is a private desktop application that turns a spoken-sermon recording into a cleaned, consistently leveled MP3. It prepares a short volume preview before processing, and everything happens entirely on the local machine.
 
 ## Download and install
 
@@ -48,15 +48,18 @@ You can move the AppImage to a permanent folder before running it. If your distr
 ### Clean a sermon
 
 1. Choose **Choose recording** (or drop an audio file onto the window).
-2. Wait while cleanup and loudness normalization run automatically.
-3. When processing finishes, use **Show in folder** to find the new `-cleaned.mp3` file beside the original recording. The original file is never modified.
+2. Play the cleaned three-second sample selected near the middle of the recording.
+3. Move **Output volume** from −24 to −14 LUFS if needed. The default remains −16 LUFS.
+4. Choose **Clean full recording** and wait while the whole sermon is cleaned and normalized to the selected target.
+5. When processing finishes, use **Show in folder** to find the new `-cleaned.mp3` file beside the original recording. The original file is never modified.
 
 ## What it does
 
 - Accepts MP3, WAV, M4A/AAC, FLAC, OGG/Opus, and WebM audio up to 90 minutes.
 - Converts the recording to mono at 48 kHz.
 - Reduces steady hiss, fan noise, and hum with deterministic FFT filtering.
-- Smooths large volume differences and applies measured two-pass normalization to −16 LUFS with a −1.5 dB true-peak target.
+- Prepares a cleaned three-second speech preview near the midpoint for choosing output volume.
+- Smooths large volume differences and applies measured two-pass normalization from −24 to −14 LUFS (default −16) with a −1.5 dB true-peak target.
 - Saves a 128 kbps MP3 beside the source without ever overwriting an existing file.
 - Uses no AI model, cloud API, account, telemetry, or runtime network connection.
 
@@ -99,7 +102,7 @@ The exact cleanup preset lives in `electron/audio-utils.ts`. Both passes use the
 2. Remove sub-70 Hz rumble and frequencies above 16 kHz.
 3. Apply FFmpeg `afftdn` with automatic noise and residual tracking.
 4. Apply conservative `dynaudnorm` leveling with a four-times gain ceiling and a silence threshold.
-5. Measure `loudnorm` statistics during pass one, then apply those measurements during pass two.
+5. Measure `loudnorm` statistics for the selected target during pass one, then apply those measurements during pass two.
 6. Encode mono MP3 at 128 kbps and validate codec, sample rate, channels, and duration before the partial file is renamed.
 
 ## Privacy and files

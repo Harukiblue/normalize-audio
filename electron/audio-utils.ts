@@ -2,6 +2,13 @@ import { constants as fsConstants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Stats } from "node:fs";
+import {
+  isValidLoudnessTarget,
+  LOUDNESS_TARGET,
+  previewPlaybackGain,
+} from "../src/loudness";
+
+export { isValidLoudnessTarget, LOUDNESS_TARGET, previewPlaybackGain };
 
 export const SUPPORTED_EXTENSIONS = new Set([
   ".mp3",
@@ -23,11 +30,13 @@ export const AUDIO_FILTER_CHAIN = [
   "dynaudnorm=f=500:g=31:p=0.95:m=4:r=0.1:s=6:t=0.01:c=1",
 ].join(",");
 
-export const LOUDNESS_TARGET = {
-  integrated: -16,
-  range: 7,
-  truePeak: -1.5,
-} as const;
+export const PREVIEW_DURATION_SECONDS = 3;
+export const PREVIEW_SEARCH_RADIUS_SECONDS = 30;
+
+export interface SilenceInterval {
+  start: number;
+  end: number;
+}
 
 export interface LoudnormStats {
   inputI: number;
@@ -47,6 +56,64 @@ interface RawLoudnormStats {
 
 export function isSupportedAudioPath(filePath: string): boolean {
   return SUPPORTED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+export function parseSilenceIntervals(stderr: string, scanDuration: number): SilenceInterval[] {
+  const events = [...stderr.matchAll(/silence_(start|end):\s*([\d.]+)/g)];
+  const intervals: SilenceInterval[] = [];
+  let openStart: number | null = null;
+
+  for (const event of events) {
+    const value = Math.max(0, Math.min(scanDuration, Number(event[2])));
+    if (!Number.isFinite(value)) continue;
+    if (event[1] === "start") {
+      openStart = value;
+    } else if (openStart !== null && value >= openStart) {
+      intervals.push({ start: openStart, end: value });
+      openStart = null;
+    }
+  }
+  if (openStart !== null) intervals.push({ start: openStart, end: scanDuration });
+  return intervals;
+}
+
+function overlapSeconds(start: number, end: number, intervals: SilenceInterval[]): number {
+  return intervals.reduce(
+    (total, interval) => total + Math.max(0, Math.min(end, interval.end) - Math.max(start, interval.start)),
+    0,
+  );
+}
+
+export function choosePreviewStart(
+  durationSeconds: number,
+  scanStartSeconds: number,
+  scanDurationSeconds: number,
+  silenceIntervals: SilenceInterval[],
+): number {
+  const sampleDuration = Math.min(PREVIEW_DURATION_SECONDS, durationSeconds);
+  if (durationSeconds <= sampleDuration) return 0;
+
+  const maximumLocalStart = Math.max(0, scanDurationSeconds - sampleDuration);
+  const exactStart = Math.min(
+    maximumLocalStart,
+    Math.max(0, durationSeconds / 2 - sampleDuration / 2 - scanStartSeconds),
+  );
+  const candidates = new Set<number>([exactStart]);
+  for (let start = 0; start <= maximumLocalStart + 0.001; start += 0.5) {
+    candidates.add(Math.min(maximumLocalStart, Math.round(start * 2) / 2));
+  }
+
+  const ranked = [...candidates].map((start) => ({
+    start,
+    silence: overlapSeconds(start, start + sampleDuration, silenceIntervals),
+    midpointDistance: Math.abs(scanStartSeconds + start + sampleDuration / 2 - durationSeconds / 2),
+  }));
+  ranked.sort((left, right) =>
+    left.silence - right.silence ||
+    left.midpointDistance - right.midpointDistance ||
+    left.start - right.start,
+  );
+  return Math.max(0, Math.min(durationSeconds - sampleDuration, scanStartSeconds + ranked[0].start));
 }
 
 export function cleanedBaseName(sourcePath: string): string {
@@ -95,17 +162,50 @@ export function parseLoudnormStats(stderr: string): LoudnormStats {
   return values;
 }
 
-export function analysisArguments(inputPath: string, nullTarget: string): string[] {
+export function silenceScanArguments(
+  inputPath: string,
+  startSeconds: number,
+  durationSeconds: number,
+  nullTarget: string,
+): string[] {
   return [
     "-hide_banner",
     "-nostdin",
+    "-ss",
+    String(startSeconds),
+    "-t",
+    String(durationSeconds),
     "-i",
     inputPath,
     "-map",
     "0:a:0",
     "-vn",
     "-af",
-    `${AUDIO_FILTER_CHAIN},loudnorm=I=${LOUDNESS_TARGET.integrated}:LRA=${LOUDNESS_TARGET.range}:TP=${LOUDNESS_TARGET.truePeak}:print_format=json`,
+    "highpass=f=70,lowpass=f=16000,silencedetect=noise=-45dB:d=0.35",
+    "-f",
+    "null",
+    nullTarget,
+  ];
+}
+
+export function analysisArguments(
+  inputPath: string,
+  nullTarget: string,
+  targetLufs: number = LOUDNESS_TARGET.defaultIntegrated,
+  segment?: { startSeconds: number; durationSeconds: number },
+): string[] {
+  if (!isValidLoudnessTarget(targetLufs)) throw new Error("Invalid loudness target.");
+  return [
+    "-hide_banner",
+    "-nostdin",
+    ...(segment ? ["-ss", String(segment.startSeconds), "-t", String(segment.durationSeconds)] : []),
+    "-i",
+    inputPath,
+    "-map",
+    "0:a:0",
+    "-vn",
+    "-af",
+    `${AUDIO_FILTER_CHAIN},loudnorm=I=${targetLufs}:LRA=${LOUDNESS_TARGET.range}:TP=${LOUDNESS_TARGET.truePeak}:print_format=json`,
     "-progress",
     "pipe:1",
     "-nostats",
@@ -119,9 +219,12 @@ export function exportArguments(
   inputPath: string,
   partialOutputPath: string,
   measurements: LoudnormStats,
+  targetLufs: number = LOUDNESS_TARGET.defaultIntegrated,
+  segment?: { startSeconds: number; durationSeconds: number },
 ): string[] {
+  if (!isValidLoudnessTarget(targetLufs)) throw new Error("Invalid loudness target.");
   const normalized = [
-    `loudnorm=I=${LOUDNESS_TARGET.integrated}`,
+    `loudnorm=I=${targetLufs}`,
     `LRA=${LOUDNESS_TARGET.range}`,
     `TP=${LOUDNESS_TARGET.truePeak}`,
     `measured_I=${measurements.inputI}`,
@@ -137,6 +240,7 @@ export function exportArguments(
     "-hide_banner",
     "-nostdin",
     "-n",
+    ...(segment ? ["-ss", String(segment.startSeconds), "-t", String(segment.durationSeconds)] : []),
     "-i",
     inputPath,
     "-map",

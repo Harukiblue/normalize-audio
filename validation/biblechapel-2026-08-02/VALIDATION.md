@@ -34,3 +34,21 @@ The packaged Windows application was launched with Playwright. Its native file d
 ## Interpretation
 
 The structural, safety, loudness, duration, and deterministic-noise-reduction acceptance criteria pass. The high-frequency comparison is a denoising proxy: it measures the 9–15 kHz band relative to total program RMS so that the output’s loudness gain does not create a misleading comparison. It is consistent with reduced hiss, but it is not a clean-reference SNR or a substitute for human listening. Final subjective acceptance should include listening to speech, pauses, and consonants for metallic artifacts or pumping.
+
+## Adjustable-volume validation — August 28, 2026
+
+Version 0.2.0 prepared a three-second preview at 1326.708 seconds, centered within 8 ms of the 44:16 recording's midpoint. The packaged Windows app then used the slider-selected −20 LUFS target and completed the full recording in 7 minutes 36 seconds.
+
+| Measurement | Selected target/output | Result |
+|---|---:|---|
+| Preview duration | 3.000 s | Pass |
+| Preview reference level | −14 LUFS | Pass — supports instant slider attenuation |
+| Selected full-file target | −20 LUFS | Pass |
+| Measured integrated loudness | −20.45 LUFS | Pass — within −20 ±1 LU |
+| Measured true peak | −1.63 dBFS | Pass — below −1.5 dBFS |
+| Measured loudness range | 6.80 LU | Pass — below the 7 LU target |
+| Output size | 42,503,676 bytes | Pass |
+
+- Adjustable output SHA-256: `A31747CB4E13C45CEB663140A2FDF667706D6F7B3758CDBA82599659948BE50C`
+- The source size and modification time were unchanged.
+- The packaged interface displayed `Normalized to -20 LUFS` on completion.

@@ -29,6 +29,11 @@ test("cleans a real full-length sermon through the packaged application", async 
 
   await window.getByRole("button", { name: /choose recording/i }).click();
   await expect(window.getByText(path.basename(sermonPath!))).toBeVisible();
+  const slider = window.getByRole("slider", { name: /output volume/i });
+  await expect(slider).toBeVisible({ timeout: 60_000 });
+  await slider.fill("-20");
+  await expect(window.getByText("Quieter (-20 LUFS)")).toBeVisible();
+  await window.getByRole("button", { name: /clean full recording/i }).click();
   await expect(window.getByRole("heading", { name: /your sermon is ready/i })).toBeVisible({
     timeout: 9 * 60_000,
   });
@@ -42,6 +47,7 @@ test("cleans a real full-length sermon through the packaged application", async 
   expect(output.size).toBeGreaterThan(1_000_000);
   expect(sourceAfter.size).toBe(sourceBefore.size);
   expect(sourceAfter.mtimeMs).toBe(sourceBefore.mtimeMs);
+  await expect(window.getByText("Normalized to -20 LUFS")).toBeVisible();
 
   console.log(`REAL_SERMON_OUTPUT=${outputPath}`);
   await electronApp.close();

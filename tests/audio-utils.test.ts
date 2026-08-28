@@ -5,11 +5,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AUDIO_FILTER_CHAIN,
   analysisArguments,
+  choosePreviewStart,
   exportArguments,
   findAvailableOutputPath,
   isSupportedAudioPath,
+  isValidLoudnessTarget,
   parseLoudnormStats,
   parseProgressSeconds,
+  parseSilenceIntervals,
+  previewPlaybackGain,
   progressPercent,
 } from "../electron/audio-utils";
 
@@ -56,19 +60,47 @@ describe("audio processing utilities", () => {
   });
 
   it("builds both passes with the same deterministic cleanup chain", () => {
-    const analysis = analysisArguments("input file.wav", "NUL");
+    const analysis = analysisArguments("input file.wav", "NUL", -20);
     const output = exportArguments("input file.wav", "partial.mp3", {
       inputI: -24,
       inputTp: -3,
       inputLra: 5,
       inputThresh: -34,
       targetOffset: 0,
-    });
+    }, -20);
     expect(analysis.join(" ")).toContain(AUDIO_FILTER_CHAIN);
     expect(output.join(" ")).toContain(AUDIO_FILTER_CHAIN);
     expect(output).toContain("libmp3lame");
     expect(output).toContain("128k");
     expect(output.join(" ")).toContain("measured_I=-24");
+    expect(analysis.join(" ")).toContain("loudnorm=I=-20");
+    expect(output.join(" ")).toContain("loudnorm=I=-20");
+  });
+
+  it("validates targets and converts LUFS differences into preview gain", () => {
+    expect(isValidLoudnessTarget(-24)).toBe(true);
+    expect(isValidLoudnessTarget(-16)).toBe(true);
+    expect(isValidLoudnessTarget(-14)).toBe(true);
+    expect(isValidLoudnessTarget(-13)).toBe(false);
+    expect(isValidLoudnessTarget(-16.5)).toBe(false);
+    expect(previewPlaybackGain(-14)).toBe(1);
+    expect(previewPlaybackGain(-16)).toBeCloseTo(0.794, 3);
+    expect(previewPlaybackGain(-24)).toBeCloseTo(0.316, 3);
+  });
+
+  it("chooses the nearest non-silent three-second window around the midpoint", () => {
+    const intervals = parseSilenceIntervals(
+      "silence_start: 28.4\nsilence_end: 32.1 | silence_duration: 3.7",
+      60,
+    );
+    expect(intervals).toEqual([{ start: 28.4, end: 32.1 }]);
+    const start = choosePreviewStart(120, 30, 60, intervals);
+    expect(start).toBeGreaterThanOrEqual(55);
+    expect(start + 3).toBeLessThanOrEqual(58.5);
+  });
+
+  it("uses all available audio for recordings shorter than three seconds", () => {
+    expect(choosePreviewStart(2.25, 0, 2.25, [])).toBe(0);
   });
 
   it("parses FFmpeg progress and maps it into a stage range", () => {
